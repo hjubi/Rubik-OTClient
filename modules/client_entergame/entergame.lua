@@ -1,10 +1,11 @@
-﻿-- chunkname: @/client_entergame/entergame.lua
+-- chunkname: @/client_entergame/entergame.lua
 
 EnterGame = {}
 
 local loadBox, enterGame, motdWindow, enterGameButton, clientBox
 local motdEnabled = true
 local twoFactorWindow, hostInfos
+local loginRequestId = 0
 
 local function getStatusServiceUrl()
 	if Services and Services.status and Services.status ~= "" then
@@ -13,6 +14,7 @@ local function getStatusServiceUrl()
 
 	if Servers_init then
 		local loginUrl, server = next(Servers_init)
+		if server and server.rsa == "cipsoft" then return nil end
 		if server and server.httpLogin and type(loginUrl) == "string" and loginUrl:match("^https?://") then
 			return loginUrl
 		end
@@ -29,8 +31,23 @@ local function buildLoginBody(token)
 		password = G.password
 	}
 
+	if g_game.getRsa() == CIPSOFT_RSA then
+        local server = Servers_init and Servers_init[G.host]
+        local osType = server and server.os
+        local appOs = g_app.getOs()
+        body.clientversion = g_game.getLoginClientVersion(true)
+        body.assetversion = g_game.getLoginAssetVersion()
+        body.clienttype = ((osType == OsTypes.Linux or osType == OsTypes.QtLinux) and 7) or
+                          ((osType == OsTypes.Windows or osType == OsTypes.QtWindows) and 5) or
+                          (osType == OsTypes.QtMac and 6) or
+                          (appOs == 'windows' and 5) or (appOs == 'mac' and 6) or 7
+        body.operatingsystem = g_platform.getOSName()
+        body.stayloggedin = G.stayLogged ~= false
+    end
+
 	if token and token:len() > 0 then
 		body.token = token
+		body.authenticatorToken = token
 	end
 
 	return body
@@ -40,18 +57,17 @@ local function buildLoginUrl(scheme, port)
 	return string.format("%s://%s:%d%s", scheme, G.loginHost, port, G.loginPath)
 end
 
-local function sendHttpLoginRequest(httpLogin, token, scheme, port)
+local function sendHttpLoginRequest(token, scheme, port)
 	local requestId = G.requestId
 	local url = buildLoginUrl(scheme, port)
 
-	G.httpOperationId = HTTP.postJSON(url, buildLoginBody(token), function(data, err)
+    local body = buildLoginBody(token)
+    if body.clientversion then
+        g_logger.info(string.format('[Login HTTP] host=%s port=%d clientversion=%s assetversion=%s clienttype=%d',
+                      G.loginHost, port, body.clientversion, body.assetversion, body.clienttype))
+    end
+	G.httpOperationId = HTTP.postJSON(url, body, function(data, err)
 		if G.requestId ~= requestId then
-			return
-		end
-
-		if err and scheme == "https" and httpLogin then
-			sendHttpLoginRequest(httpLogin, token, "http", G.httpFallbackPort or 80)
-
 			return
 		end
 
@@ -602,6 +618,11 @@ function EnterGame.onClientVersionChange(comboBox, text, data)
 end
 
 function EnterGame.tryHttpLogin(clientVersion, httpLogin, token)
+    if G.httpOperationId then
+        HTTP.cancel(G.httpOperationId)
+        G.httpOperationId = nil
+    end
+    G.requestId = 0
 	G.pendingClientVersion = clientVersion
 	G.pendingHttpLogin = httpLogin
 
@@ -625,25 +646,16 @@ function EnterGame.tryHttpLogin(clientVersion, httpLogin, token)
 		return
 	end
 
-	local scheme, authority, path = G.host:match("^(https?)://([^/]+)(/.*)$")
-	if not authority then
-		authority, path = G.host:match("^([^/]+)(/.*)$")
-	end
-
-	scheme = scheme or ((G.port == 443) and "https" or "http")
-	local host, urlPort = authority and authority:match("^([^:]+):(%d+)$")
-	host = host or authority
-	G.port = tonumber(urlPort) or G.port or (scheme == "https" and 443 or 80)
-	path = path or ""
-	G.loginHost = host
-	G.loginPath = path
-	G.loginScheme = scheme
-
-	if not host then
-		loadBox = displayCancelBox(tr("Please wait"), tr("ERROR , try adding \n- ip/login.php \n- Enable HTTP login"))
-	else
-		loadBox = displayCancelBox(tr("Connecting"), tr("Your character list is being loaded. Please wait."))
-	end
+    local endpoint, endpointError = g_game.getLoginEndpoint(G.host, G.port, httpLogin)
+    if not endpoint then
+        onError(nil, tr(endpointError), -1)
+        return
+    end
+    if loadBox then loadBox:destroy() end
+    G.port = endpoint.port
+    G.loginHost, G.loginPath = endpoint.host, endpoint.path
+    G.loginScheme = endpoint.useHttp and 'http' or 'https'
+    loadBox = displayCancelBox(tr('Connecting'), tr('Your character list is being loaded. Please wait.'))
 
 	connect(loadBox, {
 		onCancel = function(msgbox)
@@ -659,11 +671,9 @@ function EnterGame.tryHttpLogin(clientVersion, httpLogin, token)
 			EnterGame.show()
 		end
 	})
-	math.randomseed(os.time())
-
-	G.requestId = math.random(1)
-
-	sendHttpLoginRequest(httpLogin, token or "", G.loginScheme, G.port)
+    loginRequestId = loginRequestId + 1
+    G.requestId = loginRequestId
+    sendHttpLoginRequest(token or '', G.loginScheme, G.port)
 end
 
 function EnterGame.destroyTwoFactorWindow()
@@ -721,12 +731,12 @@ function EnterGame.handleHttpLoginResponse(data, err, requestId)
 	G.httpOperationId = nil
 
 	if err then
-		onError(nil, err, nil)
+		onError(nil, err, -1)
 
 		return
 	end
 
-	if not data then
+	if type(data) ~= "table" then
 		onError(nil, tr("Unexpected JSON format."), nil)
 
 		return
@@ -738,8 +748,8 @@ function EnterGame.handleHttpLoginResponse(data, err, requestId)
 		return
 	end
 
-	if data.errorMessage then
-		onError(nil, data.errorMessage, data.errorCode)
+	if (data.errorCode and tonumber(data.errorCode) ~= 0) or (data.errorMessage and data.errorMessage ~= "") then
+		onError(nil, data.errorMessage or tr("Login service rejected the request."), data.errorCode)
 
 		return
 	end
@@ -784,22 +794,35 @@ function EnterGame.loginSuccess(requestId, jsonSession, jsonWorlds, jsonCharacte
 
 	local worlds = {}
 
-	for _, world in ipairs(json.decode(jsonWorlds)) do
-		if world.id then
-			worlds[world.id] = {
-				name = world.name,
-				ip = world.externaladdressprotected,
-				port = world.externalportprotected,
-				previewState = world.previewstate == 1,
-				pvptype = world.pvptype
-			}
-		end
-	end
+    local server = Servers_init and Servers_init[G.host]
+    local endpointType = server and server.gameEndpoint or 'protected'
+    if endpointType ~= 'protected' and endpointType ~= 'unprotected' then
+        onError(nil, tr('Invalid game endpoint profile.'), -1)
+        return
+    end
+    for _, world in ipairs(json.decode(jsonWorlds)) do
+        local address = world['externaladdress' .. endpointType]
+        local port = tonumber(world['externalport' .. endpointType])
+        if world.id == nil or type(address) ~= 'string' or address == '' or not port or
+           port < 1 or port > 65535 or port ~= math.floor(port) then
+            onError(nil, tr('Invalid game world address or port in login response.'), -1)
+            return
+        end
+        worlds[world.id] = {
+            name = world.name, ip = address, port = port,
+            previewState = world.previewstate == true or (tonumber(world.previewstate) or 0) ~= 0,
+            pvptype = world.pvptype
+        }
+    end
 
 	local characters = {}
 
 	for index, character in ipairs(json.decode(jsonCharacters)) do
 		local world = worlds[character.worldid]
+        if not world then
+            onError(nil, tr('Unknown game world in login response.'), -1)
+            return
+        end
 
 		characters[index] = {
 			name = character.name,
@@ -817,13 +840,17 @@ function EnterGame.loginSuccess(requestId, jsonSession, jsonWorlds, jsonCharacte
 			worldName = world.name,
 			worldIp = world.ip,
 			worldPort = world.port,
-			previewState = world.previewstate,
+			previewState = world.previewState,
 			worldPvpType = world.pvptype
 		}
 	end
 
 	local session = json.decode(jsonSession)
-	local premiumUntil = tonumber(session.premiumuntil)
+    if type(session.sessionkey) ~= 'string' or session.sessionkey == '' then
+        onError(nil, tr('Missing session key in login response.'), -1)
+        return
+    end
+	local premiumUntil = tonumber(session.premiumuntil) or 0
 	local account = {
 		status = "",
 		premDays = math.floor((premiumUntil - os.time()) / 86400),

@@ -78,7 +78,7 @@ public:
 
         // Configure SSL context properly
         m_context.set_default_verify_paths();
-        m_context.set_verify_mode(asio::ssl::verify_none);
+        m_context.set_verify_mode(asio::ssl::verify_peer);
         m_context.set_options(asio::ssl::context::default_workarounds |
                               asio::ssl::context::no_sslv2 |
                               asio::ssl::context::no_sslv3 |

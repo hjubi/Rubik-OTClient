@@ -50,9 +50,16 @@ if ENABLE_SERVERS then
     -- @table Servers_init
     --
     Servers_init = {
-        ["http://127.0.0.1/login.php"] = {
-            port = 80,
-            protocol = 1530,
+        ["https://www.tibia.com/clientservices/loginservice.php"] = {
+            port = 443,
+            protocol = 1533,
+            rsa = "cipsoft",
+            -- Full client build revision; HTTP automatically uses its first 6 characters.
+            clientRevision = "c9e45e2688cf2f79c3cba61c495e32de29d35a0b",
+            -- Login assetversion (assets.json.sha256), not the appearances-*.dat file hash.
+            -- Set to nil/"" to use the identifier from the loaded asset files.
+            assetVersion = "d28e52d02650671e7fcf52b4c14d0b53e7ad2e3d24ee0ea28b936610ba699047",
+            gameEndpoint = "protected",
             httpLogin = true,
             useAuthenticator = false
         }
@@ -63,11 +70,9 @@ g_app.setName("RubikOTC");
 g_app.setCompactName("RubikOTC");
 g_app.setOrganizationName("RubikOTC");
 
--- Our exe gates client versions on g_gameConfig.getLastSupportedVersion() (default 1). The
--- ported modules configure supported versions through a mechanism our exe doesn't expose,
--- so setClientVersion(1530) at login threw "Client version 1530 not supported". Raise the
--- ceiling here so the 1530 protocol (our server + data/things/1530) is accepted.
-g_gameConfig.setLastSupportedVersion(1530)
+-- Keep Rubik's 15.30 parser and allow the 15.33 login profile recovered
+-- from the supplied Qt client. This does not certify every 15.33 gameplay packet.
+g_gameConfig.setLastSupportedVersion(1533)
 
 g_app.hasUpdater = function()
     return (Services.updater and Services.updater ~= "" and g_modules.getModule("updater"))

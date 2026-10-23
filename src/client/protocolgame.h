@@ -228,6 +228,7 @@ private:
     void parsePvpSituations(const InputMessagePtr& msg);
     void parsePreset(const InputMessagePtr& msg);
     void parseCreatureType(const InputMessagePtr& msg);
+    void parseDepotSearchResult(const InputMessagePtr& msg);
     void parsePlayerHelpers(const InputMessagePtr& msg) const;
     void parseMessage(const InputMessagePtr& msg);
     void parseBugReport(const InputMessagePtr& msg);
@@ -365,6 +366,7 @@ private:
     void parsePartyAnalyzer(const InputMessagePtr& msg);
     void parseImbuementDurations(const InputMessagePtr& msg);
     void parsePassiveCooldown(const InputMessagePtr& msg);
+    void parseSpellDataModification(const InputMessagePtr& msg);
     void parseClientCheck(const InputMessagePtr& msg);
     void parseGameNews(const InputMessagePtr& msg);
     void parseBlessDialog(const InputMessagePtr& msg);

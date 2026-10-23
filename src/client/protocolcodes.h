@@ -64,6 +64,7 @@ namespace Proto
         GameServerSupplyStash = 41,
         GameServerSpecialContainer = 42,
         GameServerPartyAnalyzer = 43,
+        GameServerUnlockedSpells = 46, // 0x2E
         GameServerBossDifficultySelection = 47, // 0x2F crystal-summerupdate custom (boss difficulty window)
 
         // all in game opcodes must be greater than 50
@@ -91,6 +92,7 @@ namespace Proto
         GameServerImbuementDurations = 93,
         GameServerPassiveCooldown = 94,
         GameServerOpenWheelWindow = 95, // 0x5F
+        GameServerSpellDataModification = 96, // 0x60, Qt 15.33
         GameServerBosstiaryData = 97,
         GameServerBosstiarySlots = 98,
         GameServerSendClientCheck = 99,
@@ -122,6 +124,7 @@ namespace Proto
         GameServerOwnTrade = 125,
         GameServerCounterTrade = 126,
         GameServerCloseTrade = 127,
+        GameServerTextForReport = 129, // 0x81
         GameServerAmbient = 130,
         GameServerGraphicalEffect = 131,
         GameServerTextEffect = 132,
@@ -145,6 +148,7 @@ namespace Proto
         GameServerEditText = 150,
         GameServerEditList = 151,
         GameServerSendGameNews = 152,
+        GameServerCloseDepotSearch = 154, // 0x9A, empty
         GameServerSendBlessDialog = 155,
         GameServerBlessings = 156,
         GameServerPreset = 157,
@@ -178,6 +182,7 @@ namespace Proto
         GameServerBestiaryRefreshTracker = 185,
         GameServerTaskHuntingBasicData = 186, // SoulSealsWindow 1521
         GameServerTaskHuntingData = 187,
+        GameServerStop = 188, // 0xBC, empty
         GameServerBosstiaryCooldownTimer = 189,
         GameServerFloorChangeUp = 190,
         GameServerFloorChangeDown = 191,
@@ -185,9 +190,11 @@ namespace Proto
         GameServerMonkData = 193,
         GameServerCyclopediaHouseAuctionMessage = 195,
         GameServerWeaponProficiencyInfo = 196,
+        GameServerGemAtelierGemRevealed = 197, // 0xC5
         GameServerCyclopediaHousesInfo = 198,
         GameServerCyclopediaHouseList = 199,
         GameServerChooseOutfit = 200,
+        GameServerExivaSuppressed = 201, // 0xC9, empty
         GameServerExivaRestrictions = 202,
         GameServerSendUpdateImpactTracker = 204,
         GameServerSendItemsPrice = 205,
@@ -204,6 +211,7 @@ namespace Proto
         GameServerBestiaryCharmsData = 216,
         GameServerBestiaryEntryChanged = 217,
         GameServerCyclopediaCharacterInfoData = 218,
+        GameServerHirelingNameChange = 219, // 0xDB
         GameServerTutorialHint = 220,
         GameServerAutomapFlag = 221,
         GameServerSendDailyRewardCollectionState = 222,
@@ -211,6 +219,7 @@ namespace Proto
         GameServerStoreError = 224,
         GameServerRequestPurchaseData = 225,
         GameServerSendOpenRewardWall = 226,
+        GameServerCloseRewardWall = 227, // 0xE3, empty
         GameServerSendDailyReward = 228,
         GameServerSendRewardHistory = 229,
         GameServerSendPreyFreeRerolls = 230, // GameServerSendBosstiaryEntryChanged = 230,

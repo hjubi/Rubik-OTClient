@@ -26,6 +26,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "game.h"
+#include "framework/stdext/string.h"
 #include "spriteappearances.h"
 #include "thingtype.h"
 #include "framework/core/filestream.h"
@@ -193,6 +194,7 @@ bool ThingTypeManager::loadAppearances(const std::string& file)
             }
 
             m_assetIdentifier = g_resources.readFileContents(g_resources.resolvePath(identifierPath));
+            stdext::trim(m_assetIdentifier);
             const bool validHash = m_assetIdentifier.size() == 64 &&
                 std::ranges::all_of(m_assetIdentifier, [](const char c) {
                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -367,44 +369,53 @@ bool ThingTypeManager::loadStaticData(const std::string& file)
         // load staticdata.dat
         std::stringstream datFileStream;
         g_resources.readFileStream(g_resources.resolvePath(fmt::format("{}{}", file, staticDataFile)), datFileStream);
-        auto staticDataLib = staticdata::Staticdata();
-        if (!staticDataLib.ParseFromIstream(&datFileStream)) {
-            throw stdext::exception("Couldn't parse staticdata lib.");
-        }
+        const auto loadBanks = [this](const auto& staticDataLib) {
+            // if reload, start again
+            m_monsterRaces.clear();
+            m_houses.clear();
 
-        // if reload, start again
-        m_monsterRaces.clear();
-        m_houses.clear();
-
-        // house catalogue (Cyclopedia house auction: names, rent, sqms, city)
-        m_houses.reserve(staticDataLib.houses().size());
-        for (const auto& house : staticDataLib.houses()) {
-            HouseType h;
-            h.id = house.id();
-            h.name = house.name();
-            h.description = house.description();
-            h.rent = house.rent();
-            h.beds = house.beds();
-            h.sqms = house.sqms();
-            h.isGuildHall = house.isguildhall();
-            h.isShop = house.isshop();
-            h.city = house.city();
-            if (house.has_position()) {
-                h.position = Position(house.position().x(), house.position().y(), house.position().z());
+            // house catalogue (Cyclopedia house auction: names, rent, sqms, city)
+            m_houses.reserve(staticDataLib.houses().size());
+            for (const auto& house : staticDataLib.houses()) {
+                HouseType h;
+                h.id = house.id();
+                h.name = house.name();
+                h.description = house.description();
+                h.rent = house.rent();
+                h.beds = house.beds();
+                h.sqms = house.sqms();
+                h.isGuildHall = house.isguildhall();
+                h.isShop = house.isshop();
+                h.city = house.city();
+                if (house.has_position()) {
+                    h.position = Position(house.position().x(), house.position().y(), house.position().z());
+                }
+                m_houses.emplace_back(std::move(h));
             }
-            m_houses.emplace_back(std::move(h));
+
+            const auto& raceBank = staticDataLib.monsters();
+            const auto& bossBank = staticDataLib.bosses();
+            m_monsterRaces.reserve(static_cast<size_t>(raceBank.size()) + bossBank.size());
+
+            // load monsters and bosses
+            // note: aside from compatibility with the QT client,
+            // there is no need to have monsters and bosses
+            // in separate data banks
+            loadCreatureBank(m_monsterRaces, raceBank, false);
+            loadCreatureBank(m_monsterRaces, bossBank, true);
+
+        };
+        if (g_game.getClientVersion() >= 1533) {
+            staticdata::Staticdata1533 staticDataLib;
+            if (!staticDataLib.ParseFromIstream(&datFileStream))
+                throw stdext::exception("Couldn't parse Qt 15.33 staticdata lib.");
+            loadBanks(staticDataLib);
+        } else {
+            staticdata::Staticdata staticDataLib;
+            if (!staticDataLib.ParseFromIstream(&datFileStream))
+                throw stdext::exception("Couldn't parse staticdata lib.");
+            loadBanks(staticDataLib);
         }
-
-        const auto& raceBank = staticDataLib.monsters();
-        const auto& bossBank = staticDataLib.bosses();
-        m_monsterRaces.reserve(static_cast<size_t>(raceBank.size()) + bossBank.size());
-
-        // load monsters and bosses
-        // note: aside from compatibility with the QT client,
-        // there is no need to have monsters and bosses
-        // in separate data banks
-        loadCreatureBank(m_monsterRaces, raceBank, false);
-        loadCreatureBank(m_monsterRaces, bossBank, true);
 
         // Drop the catalog DOM after use (see the comment in loadAppearances) - lazy-reload will load it
         // again should another loader need it.

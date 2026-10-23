@@ -1,10 +1,19 @@
-﻿-- chunkname: @/gamelib/protocolgame.lua
+-- chunkname: @/gamelib/protocolgame.lua
 
 local opcodeCallbacks = {}
 local extendedCallbacks = {}
 local extendedJSONCallbacks = {}
 local extendedJSONData = {}
 local maxPacketSize = 65000
+
+-- Called by the native game-login serializer; HTTPS uses the short revision.
+function ProtocolGame:getLoginClientVersion()
+    return g_game.getLoginClientVersion(false)
+end
+
+function ProtocolGame:getLoginAssetVersion()
+    return g_game.getLoginAssetVersion()
+end
 
 function ProtocolGame:onOpcode(opcode, msg)
 	for i, callback in pairs(opcodeCallbacks) do

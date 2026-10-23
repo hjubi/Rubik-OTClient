@@ -31,6 +31,7 @@
 #include "localplayer.h"
 #include "protocolgame.h"
 #include "protocolcodes.h"
+#include "protocolgamewire.h"
 #include "luavaluecasts_client.h"
 #include "map.h"
 #include "mapview.h"
@@ -44,6 +45,7 @@
 #include "paperdollmanager.h"
 #include "paperdoll.h"
 #include <fmt/format.h>
+#include <deque>
 #include <framework/util/stats.h>
 
 void ProtocolGame::parseMessage(const InputMessagePtr& msg)
@@ -51,6 +53,13 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
     int opcode = -1;
     int prevOpcode = -1;
     uint32_t opcodeCount = 0;
+    std::deque<std::pair<int, int>> recentOpcodes;
+    const auto describeRecentOpcodes = [&recentOpcodes]() {
+        std::string history;
+        for (const auto& [code, position] : recentOpcodes)
+            history += fmt::format("0x{:02X}@{} ", code, position);
+        return history;
+    };
 
     g_logger.traceDebug("[PROTO_TRACE] parseMessage begin: size={}, readPos={}, unread={}",
         msg->getMessageSize(), msg->getReadPos(), msg->getUnreadSize());
@@ -61,6 +70,9 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
             opcode = msg->getU8();
             const int bodyStart = msg->getReadPos();
             ++opcodeCount;
+            recentOpcodes.emplace_back(opcode, opcodeStart);
+            if (recentOpcodes.size() > 12)
+                recentOpcodes.pop_front();
 
             g_logger.traceDebug("[PROTO_TRACE] opcode #{}, 0x{:02X}: start={}, bodyStart={}, unread={}",
                 opcodeCount, opcode, opcodeStart, bodyStart, msg->getUnreadSize());
@@ -229,6 +241,9 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
                 case Proto::GameServerBosstiarySlots:
                     parseBosstiarySlots(msg);
                     break;
+                case Proto::GameServerSpellDataModification:
+                    parseSpellDataModification(msg);
+                    break;
                 case Proto::GameServerSendClientCheck:
                     parseClientCheck(msg);
                     break;
@@ -313,6 +328,43 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
                 case Proto::GameServerCloseTrade:
                     parseCloseTrade(msg);
                     break;
+                case Proto::GameServerUnlockedSpells: {
+                    const auto spells = ProtocolGameWire::readUnlockedSpells(*msg);
+                    m_localPlayer->setSpells(spells);
+                    g_lua.callGlobalField("g_game", "onUnlockedSpells", spells);
+                    break;
+                }
+                case Proto::GameServerCloseDepotSearch:
+                    g_lua.callGlobalField("g_game", "onCloseDepotSearch");
+                    break;
+                case Proto::GameServerStop:
+                    g_lua.callGlobalField("g_game", "onServerStop");
+                    break;
+                case Proto::GameServerExivaSuppressed:
+                    g_lua.callGlobalField("g_game", "onExivaSuppressed");
+                    break;
+                case Proto::GameServerCloseRewardWall:
+                    g_lua.callGlobalField("g_game", "onCloseRewardWall");
+                    break;
+                case Proto::GameServerMarketLeave:
+                    g_lua.callGlobalField("g_game", "onMarketLeave");
+                    break;
+                case Proto::GameServerTextForReport: {
+                    const auto reportId = msg->getU32();
+                    const auto first = msg->getString();
+                    const auto second = msg->getString();
+                    g_lua.callGlobalField("g_game", "onTextForReport", reportId, first, second);
+                    break;
+                }
+                case Proto::GameServerGemAtelierGemRevealed:
+                    g_lua.callGlobalField("g_game", "onGemAtelierGemRevealed", msg->getU16());
+                    break;
+                case Proto::GameServerHirelingNameChange: {
+                    const auto first = msg->getU32();
+                    const auto second = msg->getU32();
+                    g_lua.callGlobalField("g_game", "onHirelingNameChange", first, second);
+                    break;
+                }
                 case Proto::GameServerAmbient:
                     parseWorldLight(msg);
                     break;
@@ -386,7 +438,10 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
                     parseCreaturesMark(msg);
                     break;
                 case Proto::GameServerPlayerHelpers:
-                    parsePlayerHelpers(msg);
+                    if (g_game.getClientVersion() >= 1533)
+                        parseDepotSearchResult(msg);
+                    else
+                        parsePlayerHelpers(msg);
                     break;
                 case Proto::GameServerCreatureType:
                     parseCreatureType(msg);
@@ -707,6 +762,7 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
                     g_logger.warning(
                         "[{}] Unhandled opcode 0x{:02X} ({}) with {} unread bytes; previous opcode: 0x{:02X} ({}); next bytes: {}",
                         g_game.getClientVersion(), opcode, opcode, unreadSize, prevOpcode, prevOpcode, hexDump.str());
+                    g_logger.warning("[protocol] recent opcodes (opcode@offset): {}", describeRecentOpcodes());
                     // Message size excludes the protocol header, while readPos is
                     // absolute. Skipping the unread body reaches eof() correctly.
                     msg->skipBytes(static_cast<uint16_t>(unreadSize));
@@ -726,6 +782,7 @@ void ProtocolGame::parseMessage(const InputMessagePtr& msg)
         g_logger.traceDebug("[PROTO_TRACE] parseMessage end: opcodes={}, readPos={}, unread={}",
             opcodeCount, msg->getReadPos(), msg->getUnreadSize());
     } catch (const stdext::exception& e) {
+        g_logger.warning("[protocol] recent opcodes (opcode@offset): {}", describeRecentOpcodes());
         const auto unread = msg->getUnreadSize();
         const auto readPos = msg->getReadPos();
         const auto remainingBytes = msg->peekBytes(unread);
@@ -885,6 +942,12 @@ void ProtocolGame::parseStoreButtonIndicators(const InputMessagePtr& msg)
 
 void ProtocolGame::parseSetStoreDeepLink(const InputMessagePtr& msg)
 {
+    if (g_game.getClientVersion() >= 1533) {
+        const auto data = ProtocolGameWire::readStoreOpenParameters(*msg);
+        g_lua.callGlobalField("g_game", "onStoreButtonDeeplink", data.service, data.subType,
+            data.category, data.filter, data.offerId, data.search, data.parameter7, data.parameter8);
+        return;
+    }
     msg->getU8(); // currentlyFeaturedServiceType
 }
 
@@ -912,22 +975,7 @@ void ProtocolGame::parseRequestPurchaseData(const InputMessagePtr& msg)
 void ProtocolGame::parseResourceBalance(const InputMessagePtr& msg) const
 {
     const auto type = static_cast<Otc::ResourceTypes_t>(msg->getU8());
-    uint64_t value;
-    switch (type) {
-        // 14.10+
-        case Otc::RESOURCE_CHARM:
-        case Otc::RESOURCE_MINOR_CHARM:
-        case Otc::RESOURCE_MAX_CHARM:
-        case Otc::RESOURCE_MAX_MINOR_CHARM:
-        // 15.13+
-        case Otc::RESOURCE_BOUNTY_POINTS:
-        case Otc::RESOURCE_SOULSEALS:
-            value = msg->getU32();
-            break;
-        default:
-            value = msg->getU64();
-            break;
-    }
+    const auto value = ProtocolGameWire::readResourceBalance(*msg, type, g_game.getClientVersion());
     m_localPlayer->setResourceBalance(type, value);
 }
 
@@ -1360,6 +1408,14 @@ void ProtocolGame::parsePvpSituations(const InputMessagePtr& msg)
 {
     const uint8_t openPvpSituations = msg->getU8();
     g_game.setOpenPvpSituations(openPvpSituations);
+}
+
+void ProtocolGame::parseDepotSearchResult(const InputMessagePtr& msg)
+{
+    const auto results = ProtocolGameWire::readDepotSearchResults(*msg, [](uint16_t itemId) {
+        return g_things.getThingType(itemId, ThingCategoryItem)->getClassification() > 0;
+    });
+    g_lua.callGlobalField("g_game", "onDepotSearchResult", results);
 }
 
 void ProtocolGame::parsePlayerHelpers(const InputMessagePtr& msg) const
@@ -2910,12 +2966,10 @@ void ProtocolGame::parsePlayerCancelAttack(const InputMessagePtr& msg)
 
 void ProtocolGame::parsePlayerModes(const InputMessagePtr& msg)
 {
-    const auto fightMode = static_cast<Otc::FightModes>(msg->getU8());
-    const auto chaseMode = static_cast<Otc::ChaseModes>(msg->getU8());
-    const bool safeMode = static_cast<bool>(msg->getU8());
-    const auto pvpMode = static_cast<Otc::PVPModes>(g_game.getFeature(Otc::GamePVPMode) ? msg->getU8() : 0);
-
-    g_game.processPlayerModes(fightMode, chaseMode, safeMode, pvpMode);
+    const auto modes = ProtocolGameWire::readPlayerModes(*msg, g_game.getClientVersion(),
+        g_game.getFeature(Otc::GamePVPMode), static_cast<uint8_t>(g_game.getFightMode()));
+    g_game.processPlayerModes(static_cast<Otc::FightModes>(modes.fight),
+        static_cast<Otc::ChaseModes>(modes.chase), modes.safe, static_cast<Otc::PVPModes>(modes.pvp));
 }
 
 void ProtocolGame::parseSpellCooldown(const InputMessagePtr& msg)
@@ -3056,6 +3110,11 @@ void ProtocolGame::parseCloseChannel(const InputMessagePtr& msg)
 
 void ProtocolGame::parseRuleViolationChannel(const InputMessagePtr& msg)
 {
+    if (g_game.getClientVersion() >= 1533) {
+        const auto message = msg->getString();
+        g_lua.callGlobalField("g_game", "onEditGuildMessage", message);
+        return;
+    }
     const uint16_t channelId = msg->getU16();
     Game::processRuleViolationChannel(channelId);
 }
@@ -3993,6 +4052,16 @@ void ProtocolGame::parseCreaturesMark(const InputMessagePtr& msg)
 
 void ProtocolGame::parseCreatureType(const InputMessagePtr& msg)
 {
+    if (g_game.getClientVersion() >= 1533) {
+        const auto data = ProtocolGameWire::readCreatureTypeUpdate(*msg);
+        if (const auto creature = g_map.getCreatureById(data.id)) {
+            const auto type = data.type == Proto::CreatureTypeSummonOwn &&
+                data.masterId != m_localPlayer->getId() ? Proto::CreatureTypeSummonOther : data.type;
+            creature->setType(type);
+            creature->setMasterId(data.masterId);
+        }
+        return;
+    }
     const uint32_t creatureId = msg->getU32();
     const uint8_t type = msg->getU8();
 
@@ -5268,6 +5337,12 @@ void ProtocolGame::parseMonkData(const InputMessagePtr& msg) {
 
 void ProtocolGame::parseCyclopediaHouseAuctionMessage(const InputMessagePtr& msg)
 {
+    if (g_game.getClientVersion() >= 1533) {
+        const auto data = ProtocolGameWire::readHouseActionResult(*msg);
+        g_lua.callGlobalField("g_game", "onCyclopediaHouseActionResult", data.identifier,
+            data.action, data.result, data.hasExtra, data.extra);
+        return;
+    }
     msg->getU32(); // houseId (not used by the Lua callback)
     const uint8_t typeValue = msg->getU8();
     bool hasBidExtra = false;
@@ -5285,6 +5360,16 @@ void ProtocolGame::parseCyclopediaHouseAuctionMessage(const InputMessagePtr& msg
 
 void ProtocolGame::parseCyclopediaHousesInfo(const InputMessagePtr& msg)
 {
+    if (g_game.getClientVersion() >= 1533) {
+        const auto data = ProtocolGameWire::readStaticHouseData(*msg);
+        // Keep the existing UI callback contract; decode all lists for alignment.
+        std::vector<int> availableHouseIds;
+        if (data.primaryHouseId > 0)
+            availableHouseIds.push_back(static_cast<int>(data.primaryHouseId));
+        g_lua.callGlobalField("g_game", "onCyclopediaHousesInfo", availableHouseIds);
+        return;
+    }
+
     const uint32_t ownedHouseClientId = msg->getU32(); // houseClientId (owned house, 0 if none)
     msg->getU8(); // 0x00
 
@@ -5525,6 +5610,13 @@ void ProtocolGame::parsePassiveCooldown(const InputMessagePtr& msg)
         msg->getU8(); // unknown
         msg->getU8(); // unknown
     }
+}
+
+void ProtocolGame::parseSpellDataModification(const InputMessagePtr& msg)
+{
+    const auto modifications = ProtocolGameWire::readSpellDataModifications(*msg);
+    // Keep the recovered modifier IDs opaque until their UI meaning is established.
+    g_lua.callGlobalField("g_game", "onSpellDataModification", modifications);
 }
 
 void ProtocolGame::parseClientCheck(const InputMessagePtr& msg)

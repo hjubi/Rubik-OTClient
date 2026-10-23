@@ -10,6 +10,23 @@ message Staticdata {
 	repeated Quest quests = 5;
 }
 
+// Layout verified against the Qt 15.33 staticdata catalog. Keep the legacy
+// field numbers above for older assets: inserting categories shifts all
+// subsequent banks, so parsing this as Staticdata interprets houses as outfits.
+message Staticdata1533 {
+	repeated Creature monsters = 1;
+	repeated CreatureCategory creature_categories = 2;
+	repeated Achievement achievements = 3;
+	repeated House houses = 4;
+	repeated Creature bosses = 5;
+	repeated Quest quests = 6;
+}
+
+message CreatureCategory {
+	optional uint32 id = 1;
+	optional string name = 2;
+}
+
 message Outfit {
 	optional int32 looktype = 1;
 	optional OutfitColors colors = 2;

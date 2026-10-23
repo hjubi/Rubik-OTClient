@@ -1,4 +1,4 @@
-﻿-- chunkname: @/gamelib/game.lua
+-- chunkname: @/gamelib/game.lua
 
 function g_game.getRsa()
 	return G.currentRsa
@@ -20,12 +20,124 @@ function g_game.findPlayerItem(itemId, subType, tier)
 	return g_game.findItemInContainers(itemId, subType, tier or 0)
 end
 
-function g_game.chooseRsa(host)
-	if G.currentRsa ~= CIPSOFT_RSA and G.currentRsa ~= OTSERV_RSA then
-		return
-	end
+-- The server profile supplies the build revision. HTTPS uses its first six
+-- characters; the game login uses the full revision.
+function g_game.getLoginClientVersion(shortRevision)
+    local version = g_game.getClientVersion()
+    local server = Servers_init and Servers_init[G.host]
+    local revision = server and server.clientRevision
+    if type(revision) == 'string' then
+        revision = revision:match('^%s*(.-)%s*$')
+    end
+    if not revision or revision == '' then
+        return tostring(version)
+    end
+    if shortRevision then revision = revision:sub(1, 6) end
+    return string.format('%d.%02d.%s', math.floor(version / 100), version % 100, revision)
+end
 
-	g_game.setRsa(OTSERV_RSA)
+-- Both HTTPS and TCP use the same configurable asset identifier.
+function g_game.getLoginAssetVersion()
+    local server = Servers_init and Servers_init[G.host]
+    local identifier = server and server.assetVersion
+    if type(identifier) == 'string' then
+        identifier = identifier:match('^%s*(.-)%s*$')
+        if identifier ~= '' then return identifier end
+    end
+    return g_things.getAssetIdentifier()
+end
+
+-- Resolve the transport from the URL before consulting the port in the UI.
+-- The login service and the game world returned by it are separate endpoints.
+function g_game.getLoginEndpoint(address, port, useHttp)
+    local scheme, authority, path = address:match('^(%a+)://([^/?#]+)(.*)$')
+    if scheme then
+        scheme = scheme:lower()
+        if scheme ~= 'http' and scheme ~= 'https' then
+            return nil, 'Unsupported login URL scheme.'
+        end
+    end
+    if not scheme then
+        if address:find('://', 1, true) then
+            return nil, 'Unsupported login URL scheme.'
+        end
+        authority, path = address:match('^([^/?#]+)(.*)$')
+    end
+    if not authority or authority:find('[@%s]') or path:find('#', 1, true) then
+        return nil, 'Invalid login server address.'
+    end
+
+    local host, explicitPort
+    if authority:sub(1, 1) == '[' then
+        host, explicitPort = authority:match('^(%[[^%]]+%]):(%d+)$')
+        if not host then host = authority:match('^(%[[^%]]+%])$') end
+    else
+        host, explicitPort = authority:match('^([^:]+):(%d+)$')
+        if not host then host = authority:match('^([^:]+)$') end
+    end
+    port = tonumber(explicitPort) or (scheme and (scheme == 'https' and 443 or 80)) or tonumber(port)
+    if not host or not port or port < 1 or port > 65535 or port ~= math.floor(port) then
+        return nil, 'Invalid login server address or port.'
+    end
+    if path == '' then path = '/' end
+    if path:sub(1, 1) == '?' then path = '/' .. path end
+    return {
+        host = host:lower(), path = path, port = port,
+        useHttp = scheme == 'http' or (not scheme and port ~= 443 and useHttp == true)
+    }
+end
+
+local function getQtPlatformOs()
+    local os = g_app.getOs()
+    return os == 'windows' and OsTypes.QtWindows or os == 'mac' and OsTypes.QtMac or OsTypes.QtLinux
+end
+
+local profileRsa
+
+function g_game.chooseRsa(host)
+    local server = Servers_init and Servers_init[host]
+    if server and server.rsa then
+        local rsa = server.rsa == 'cipsoft' and CIPSOFT_RSA or
+                    server.rsa == 'otserv' and OTSERV_RSA or server.rsa
+        g_game.setRsa(rsa, server.rsaExponent)
+        g_game.setCustomOs(server.os or (rsa == CIPSOFT_RSA and g_game.getClientVersion() >= 1530 and getQtPlatformOs() or -1))
+        profileRsa = rsa
+        return
+    end
+    if profileRsa and G.currentRsa == profileRsa then
+        g_game.setRsa(OTSERV_RSA)
+        g_game.setCustomOs(-1)
+    end
+    profileRsa = nil
+    if G.currentRsa ~= CIPSOFT_RSA and G.currentRsa ~= OTSERV_RSA then
+        return
+    end
+    local endpoint = g_game.getLoginEndpoint(host, 7171, false)
+    host = endpoint and endpoint.host or host:lower()
+    if host == 'tibia.com' or host:ends('.tibia.com') or
+       host == 'cipsoft.com' or host:ends('.cipsoft.com') then
+        g_game.setRsa(CIPSOFT_RSA)
+
+        if g_game.getClientVersion() >= 1530 then
+            local appOs = g_app.getOs()
+            g_game.setCustomOs(appOs == 'windows' and OsTypes.QtWindows or
+                               appOs == 'mac' and OsTypes.QtMac or OsTypes.QtLinux)
+        elseif g_app.getOs() == 'windows' then
+            g_game.setCustomOs(OsTypes.Windows)
+        else
+            g_game.setCustomOs(OsTypes.Linux)
+        end
+    else
+        if G.currentRsa == CIPSOFT_RSA then
+            g_game.setCustomOs(-1)
+        end
+        g_game.setRsa(OTSERV_RSA)
+    end
+
+    -- Hack fix to resolve some 760 login issues
+    if g_game.getClientVersion() <= 760 then
+        g_game.setCustomOs(2)
+    end
 end
 
 function g_game.setRsa(rsa, e)
@@ -185,7 +297,9 @@ function g_game.getSupportedClients()
 		1510,
 		1511,
 		1520,
-		1521
+		1521,
+		1530,
+		1533
 	}
 end
 

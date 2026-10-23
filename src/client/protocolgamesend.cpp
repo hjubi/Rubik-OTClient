@@ -25,6 +25,7 @@
 #include "protocolgame.h"
 #include "framework/net/outputmessage.h"
 #include "protocolcodes.h"
+#include "protocolgamewire.h"
 #include "thingtypemanager.h"
 #include "thingtype.h"
 #include "framework/util/crypt.h"
@@ -46,7 +47,7 @@ void ProtocolGame::sendExtendedOpcode(const uint8_t opcode, const std::string& b
 void ProtocolGame::sendLoginPacket(const uint32_t challengeTimestamp, const uint8_t challengeRandom)
 {
     // No account, character, session key, challenge or packet contents in logs.
-    g_logger.info("[login] preparing login packet; assetIdentifierBytes={}", g_things.getAssetIdentifier().size());
+    g_logger.info("[login] preparing login packet");
     const auto& msg = std::make_shared<OutputMessage>();
 
     msg->addU8(Proto::ClientPendingGame);
@@ -57,11 +58,13 @@ void ProtocolGame::sendLoginPacket(const uint32_t challengeTimestamp, const uint
         msg->addU32(g_game.getClientVersion());
 
     if (g_game.getClientVersion() >= 1281) {
-        msg->addString(std::to_string(g_game.getClientVersion()));
+        const auto version = callLuaField<std::string>("getLoginClientVersion");
+        msg->addString(version.empty() ? std::to_string(g_game.getClientVersion()) : version);
     }
 
     if (g_game.getClientVersion() >= 1334) {
-        msg->addString(g_things.getAssetIdentifier());
+        const auto assetVersion = callLuaField<std::string>("getLoginAssetVersion");
+        msg->addString(assetVersion.empty() ? g_things.getAssetIdentifier() : assetVersion);
     } else if (g_game.getFeature(Otc::GameContentRevision)) {
         msg->addU16(g_things.getContentRevision());
     }
@@ -112,7 +115,8 @@ void ProtocolGame::sendLoginPacket(const uint32_t challengeTimestamp, const uint
 
     // complete the bytes for rsa encryption with zeros
     const int paddingBytes = g_crypt.rsaGetSize() - (msg->getMessageSize() - offset);
-    assert(paddingBytes >= 0);
+    if (paddingBytes < 0)
+        throw stdext::exception("Game login data exceeds the RSA block size");
     msg->addPaddingBytes(paddingBytes);
 
     // encrypt with RSA
@@ -684,19 +688,9 @@ void ProtocolGame::sendChangeFightModes(const Otc::FightModes fightMode, const O
 {
     const auto& msg = std::make_shared<OutputMessage>();
     msg->addU8(Proto::ClientChangeFightModes);
-    if (g_game.getClientVersion() >= 1530) {
-        // 15.25: fight mode byte removed; wire = [chase][secure][pvpMode][junk]
-        msg->addU8(chaseMode);
-        msg->addU8(safeFight);
-        msg->addU8(pvpMode);
-        msg->addU8(0); // junk tail byte for Cipsoft-client wire parity; server never reads it
-    } else {
-        msg->addU8(fightMode);
-        msg->addU8(chaseMode);
-        msg->addU8(safeFight);
-        if (g_game.getFeature(Otc::GamePVPMode))
-            msg->addU8(pvpMode);
-    }
+    ProtocolGameWire::writePlayerModes(*msg, g_game.getClientVersion(),
+        g_game.getFeature(Otc::GamePVPMode), {static_cast<uint8_t>(fightMode),
+            static_cast<uint8_t>(chaseMode), safeFight, static_cast<uint8_t>(pvpMode)});
     send(msg);
 }
 

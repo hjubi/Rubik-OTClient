@@ -24,6 +24,7 @@
 
 #include "framework/core/eventdispatcher.h"
 #include "framework/util/crypt.h"
+#include "framework/core/resourcemanager.h"
 
 Http g_http;
 
@@ -308,7 +309,7 @@ void HttpSession::on_resolve(const std::error_code& ec, asio::ip::tcp::resolver:
 
     g_logger.debug("Attempting connection to: {}:{}", instance_uri.domain, instance_uri.port);
 
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         // For HTTPS, use the SSL stream's underlying socket
         m_ssl.lowest_layer().async_connect(*endpoint_to_use, [sft = shared_from_this()](
             const std::error_code& ec) {
@@ -333,12 +334,15 @@ void HttpSession::on_connect(const std::error_code& ec)
 
     g_logger.debug("TCP connection established to: {}:{}", instance_uri.domain, instance_uri.port);
 
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         g_logger.debug("Starting SSL handshake...");
-        m_ssl.set_verify_mode(asio::ssl::verify_none);
-        m_ssl.set_verify_callback([](bool, const asio::ssl::verify_context&) {
-            return true;
-        });
+        // Authenticate the login service before sending credentials. The bundle
+        // also supplies roots on Windows, where OpenSSL may not use the OS store.
+        std::error_code trustError;
+        m_context.set_default_verify_paths(trustError);
+        m_context.load_verify_file(g_resources.getWorkDir() + "cacert.pem", trustError);
+        m_ssl.set_verify_mode(asio::ssl::verify_peer);
+        m_ssl.set_verify_callback(asio::ssl::host_name_verification(instance_uri.domain));
 
         // Set SNI (Server Name Indication)
         if (!SSL_set_tlsext_host_name(m_ssl.native_handle(), instance_uri.domain.c_str())) {
@@ -374,7 +378,7 @@ void HttpSession::on_write()
     g_logger.debug("Sending HTTP request to: {}:{}", instance_uri.domain, instance_uri.port);
     g_logger.debug("Request headers: {}", m_request.substr(0, std::min<size_t>(m_request.length(), size_t(200))));
 
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         async_write(m_ssl, asio::buffer(m_request), [sft = shared_from_this()]
         (const std::error_code& ec, const size_t bytes) { sft->on_request_sent(ec, bytes); });
     } else {
@@ -396,7 +400,7 @@ void HttpSession::on_request_sent(const std::error_code& ec, size_t /*bytes_tran
 
     g_logger.debug("HTTP request sent successfully, waiting for response...");
 
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         async_read_until(
             m_ssl, m_response, "\r\n\r\n",
             [this](const std::error_code& ec, const size_t size) {
@@ -515,7 +519,7 @@ void HttpSession::on_read(const std::error_code& ec, const size_t bytes_transfer
         m_timer.cancel();
     }
 
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         async_read(m_ssl, m_response,
                          asio::transfer_at_least(1),
                          [sft = shared_from_this(), on_done_read](
@@ -544,7 +548,7 @@ void HttpSession::close()
 {
     m_result->canceled = true;
     g_logger.error("HttpSession close");
-    if (instance_uri.port == "443") {
+    if (instance_uri.protocol == "https") {
         m_ssl.async_shutdown(
             [sft = shared_from_this()](
             std::error_code ec) {
